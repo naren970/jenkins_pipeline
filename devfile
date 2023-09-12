@@ -1,0 +1,262 @@
+pipeline {
+  agent any
+
+  parameters {
+    choice(
+      choices: 'prod\ndevelop',
+      description: 'Select the target environment',
+      name: 'ENVIRONMENT'
+    )
+    choice(
+      choices: 'master\ndevelop',
+      description: 'Select the target BRANCH',
+      name: 'BRANCH'
+    )
+    extendedChoice(
+      name: 'CONTAINERS',
+      description: 'Select the Service Images',
+      type: 'PT_CHECKBOX',
+      value: 'rat-webapp,oauth2,cmp-mgmt,lc-mgmt,at-mgmt',
+      multiSelectDelimiter: ',',
+      groovyScript: """
+        return ['rat-webapp', 'oauth2', 'cmp-mgmt','lc-mgmt','at-mgmt']
+      """
+    )
+  }
+
+  environment {
+    registry = "ramy1430"
+    imageTag  = "0.2.0"
+    DOCKERHUB_CREDENTIALS = credentials('tracrat_docker_id')
+  }
+
+  stages {
+    stage('Git Clone') {
+      steps {
+        script {
+          def gitUrl = ''
+           echo params.CONTAINERS
+          /*if (params.CONTAINERS.tokenize(',').any { it in ['oauth2', 'cmp-mgmt', 'lc-mgmt', 'at-mgmt'] }) {
+            gitUrl = 'https://github.com/IT/rat-cloud-services.git'
+          } else if (params.CONTAINERS.tokenize(',').contains('rat-webapp')) {
+            gitUrl = 'https://github.com/IT/rat-web-app.git'
+          }*/
+
+
+          // Uncomment the following block if you need to clone the Git repository with credentials
+          /*
+          withCredentials([
+            usernamePassword(
+              credentialsId: 'git-credentials-dev',
+              usernameVariable: 'GIT_USERNAME',
+              passwordVariable: 'GIT_PASSWORD'
+            )
+          ]) {
+            git branch: params.BRANCH, url: gitUrl, credentialsId: 'git-credentials-dev'
+          }
+          */
+        }
+      }
+    }
+
+    stage('Build and Push Docker Images') {
+      when {
+        expression { params.ENVIRONMENT == 'develop' }
+      }
+      steps {
+        script {
+          params.CONTAINERS.tokenize(',').each { container ->
+            echo container
+            def imageFullName = "${registry}/${container}:${imageTag}"
+            echo imageFullName
+
+            buildAndPushDockerImage(container, imageFullName)
+          }
+        }
+      }
+    }
+    stage('Build Prod Jar and Deploy Jar'){
+
+        when {
+            expression { params.ENVIRONMENT == 'prod' }
+        }
+
+
+        
+        steps {
+            // Your build steps here (e.g., Maven build)
+            //sh 'mvn clean install -DskipTests=true'
+
+            script {
+                params.CONTAINERS.tokenize(',').each { container ->
+                    echo container
+                    //def imageFullName = "${registry}/${container}:${imageTag}"
+                    //echo imageFullName
+                    buildJarAndDeployJar(container)
+                    //buildAndPushDockerImage(container, imageFullName)
+                }
+            }
+        }
+        
+        
+    }
+  }
+}
+
+def buildJarAndDeployJar(container){
+
+    withCredentials([
+        usernamePassword(
+        credentialsId: 'git-credentials-dev',
+        usernameVariable: 'GIT_USERNAME',
+        passwordVariable: 'GIT_PASSWORD'
+        )
+    ]) {
+            def gitUrl = ''
+            echo gitUrl
+            echo params.CONTAINERS
+            echo params.BRANCH
+        
+            /*if (params.CONTAINERS.tokenize(',').any { it in ['oauth2', 'cmp-mgmt', 'lc-mgmt', 'at-mgmt'] }) {
+                gitUrl = 'https://github.com/IT/rat-cloud-services.git'
+            } else if (params.CONTAINERS.tokenize(',').contains('rat-webapp')) {
+                gitUrl = 'https://github.com/IT/rat-web-app.git'
+            }*/
+            if ( container == 'oauth2' || container == 'cmp-mgmt' || container == 'lc-mgmt' || container == 'at-mgmt' ) {
+                gitUrl = 'https://github.com/IT/rat-cloud-services.git'
+            } else if (container =='rat-webapp') {
+                gitUrl = 'https://github.com/IT/rat-web-app.git'
+            }
+
+            git branch: params.BRANCH, url: gitUrl, credentialsId: 'git-credentials-dev'
+            echo container
+            if (container == 'rat-webapp' ) {
+                container = "./"
+            }
+
+            dir(container)  {
+            if (container != './') {
+                /*sh 'sudo update-alternatives --set java "/usr/lib/jvm/java-8-openjdk-amd64/jre/bin/java"'*/
+                sh 'mvn clean install -DskipTests=true '
+            }
+            
+            sh 'echo "Hello I\'m deployed $date" > hello.txt'
+            def jarName = 'hello.txt'
+            switch(container) {
+                case 'rat-webapp':
+                //echo "selected" container
+                  jarName = "hello.txt"
+                break
+                case 'oauth2':
+                //echo "selected" container
+                 jarName = "target/oauth2.jar"
+                break
+                case 'cmp-mgmt':
+                //echo "selected" container
+                 jarName  = "target/cmp-mgmt-1.0.jar"
+                break
+                case 'lc-mgmt':
+                //echo "selected" container
+                 jarName = "target/lc-mgmt-1.0.jar"
+                break
+                case 'at-mgmt':
+                //echo "selected" container
+                 jarName = "target/at-mgmt-1.0.jar"
+                break
+            }
+            
+            def remoteHost = '52.14.52.218' // Replace with the hostname or IP address of the remote machine
+            def remoteUser = 'ubuntu' // Replace with the username to connect to the remote machine
+            def remoteDir = '/home/ubuntu/' // Replace with the directory on the remote machine where the jar will be copied
+
+            sshagent(['tracrat_prod']) {
+                sh "scp -o StrictHostKeyChecking=no -i  /var/lib/jenkins/tracrat-prod-ppk_EPM.pem ${jarName} ${remoteUser}@${remoteHost}:${remoteDir}"
+                echo "Copied " //container
+                sshagent(['SSH_CREDENTIALS']) {
+                    sh "ssh -o StrictHostKeyChecking=no -i  /var/lib/jenkins/tracrat-prod-ppk_EPM.pem ${remoteUser}@${remoteHost} 'cd ${remoteDir} && cat hello.txt'"
+                    // sh "ssh -o StrictHostKeyChecking=no -i /home/ubuntu/tracrat-prod-ppk_EPM.pem ${remoteUser}@${remoteHost} 'cd ${remoteDir} && nohup java -jar ${jarName} > ${remoteDir}/${jarName}.log 2>&1 &'"
+                }
+            }
+    }
+    }
+
+}
+
+def buildAndPushDockerImage(container, imageFullName) {
+  withCredentials([
+    usernamePassword(
+      credentialsId: 'git-credentials-dev',
+      usernameVariable: 'GIT_USERNAME',
+      passwordVariable: 'GIT_PASSWORD'
+    )
+  ]) {
+    def gitUrl = ''
+
+    /*if (params.CONTAINERS.tokenize(',').any { it in ['oauth2', 'cmp-mgmt', 'lc-mgmt', 'at-mgmt'] }) {
+      gitUrl = 'https://github.com/IT/rat-cloud-services.git'
+    } else if (params.CONTAINERS.tokenize(',').contains('rat-webapp')) {
+      gitUrl = 'https://github.com/IT/rat-web-app.git'
+    }*/
+
+    if ( container == 'oauth2' || container == 'cmp-mgmt' || container == 'lc-mgmt' || container == 'at-mgmt' ) {
+        gitUrl = 'https://github.com/IT/rat-cloud-services.git'
+    } else if (container =='rat-webapp') {
+        gitUrl = 'https://github.com/IT/rat-web-app.git'
+    }
+    echo gitUrl
+    git branch: params.BRANCH, url: gitUrl, credentialsId: 'git-credentials-dev'
+    echo container
+    sh 'pwd'
+     if (container == 'rat-webapp' ) {
+         container = "./"
+     }
+    sh 'pwd' 
+    dir(container)  {
+      sh 'pwd'
+      if (container != './') {
+        /*sh 'sudo update-alternatives --set java "/usr/lib/jvm/java-17-openjdk-amd64/bin/java"'*/
+        sh 'mvn clean install -DskipTests=true'
+      }
+      docker.build(imageFullName, "-f Dockerfile .")
+
+      withCredentials([
+        usernamePassword(
+          credentialsId: 'tracrat_docker_id',
+          usernameVariable: 'DOCKERHUB_USERNAME',
+          passwordVariable: 'DOCKERHUB_PASSWORD'
+        )
+      ]) {
+        if (container == './' ) {
+            container = "rat-webapp"
+        }
+        sh "docker login -u ${DOCKERHUB_USERNAME} -p ${DOCKERHUB_PASSWORD}"
+        sh "docker push ${imageFullName}"
+      }
+
+
+      sh "docker stop ${container} || true"
+      sh "docker rm ${container} || true"
+      
+      def portMapping = ''
+      switch(container) {
+        case 'rat-webapp':
+          portMapping = "9000:80/tcp"
+          break
+        case 'oauth2':
+          portMapping = "8081:8081/tcp"
+          break
+        case 'cmp-mgmt':
+          portMapping = "8085:8085/tcp"
+          break
+        case 'lc-mgmt':
+          portMapping = "8087:8087/tcp"
+          break
+        case 'at-mgmt':
+          portMapping = "8088:8088/tcp"
+          break
+      }
+      
+      sh "docker run --name ${container} --network=tracrat -p ${portMapping} -d ${imageFullName}"
+    }
+  }
+}
