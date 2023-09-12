@@ -1,0 +1,53 @@
+oauth
+--------------------
+
+FROM openjdk:8
+EXPOSE 8089
+
+ADD target/rat-email-1.0.jar  rat-email-1.0.jar
+ENTRYPOINT ["java","-jar","/rat-email-1.0.jar"]
+
+
+
+atr-mgmt
+============
+
+FROM openjdk:17-alpine
+EXPOSE 8088
+ADD target/atr-mgmt-1.0.jar  atr-mgmt-1.0.jar
+ENTRYPOINT ["java","-jar","/atr-mgmt-1.0.jar"]
+
+
+cmp-mgmtn
+============
+FROM openjdk:17-alpine
+EXPOSE 8085
+EXPOSE 8761
+
+ADD target/cmp-mgmt-1.0.jar  cmp-mgmt-1.0.jar
+ENTRYPOINT ["java","-jar","/cmp-mgmt-1.0.jar"]
+
+
+
+Lc-mgmnt
+========================
+FROM openjdk:17-alpine
+EXPOSE 8087
+
+ADD target/lc-mgmt-1.0.jar  lc-mgmt-1.0.jar
+ENTRYPOINT ["java","-jar","/lc-mgmt-1.0.jar"]
+
+
+
+web-app
+============
+
+FROM node:11.6.0-alpine AS builder
+COPY . ./rat-web
+WORKDIR /rat-web
+RUN npm i
+RUN npm audit fix
+RUN $(npm bin)/ng build --prod --aot=false
+
+FROM nginx:1.15.8-alpine
+COPY --from=builder /rat-web/dist/* /usr/share/nginx/html/
